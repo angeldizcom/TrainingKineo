@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "postgres": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e", "POSTGRES_DB=kineo_training",
+        "-e", "POSTGRES_USER=postgres",
+        "-e", "POSTGRES_PASSWORD=password",
+        "-p", "5432:5432",
+        "postgres:latest"
+      ]
+    }
+  }
+}
