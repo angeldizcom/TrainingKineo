@@ -1,6 +1,24 @@
 services:
+  app:
+    build: .
+    image: kineo-training-service:latest
+    container_name: kineo-app
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/kineo_training
+      - SPRING_DATASOURCE_USERNAME=postgres
+      - SPRING_DATASOURCE_PASSWORD=password
+      - SPRING_AI_VERTEX_AI_GEMINI_PROJECT_ID=${VERTEX_PROJECT_ID}
+      - SPRING_AI_VERTEX_AI_GEMINI_LOCATION=${VERTEX_LOCATION}
+      # Si usas credenciales locales montadas:
+      # - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
+    depends_on:
+      - postgres
+
   postgres:
     image: 'postgres:16'
+    container_name: kineo-postgres
     environment:
       - 'POSTGRES_DB=kineo_training'
       - 'POSTGRES_PASSWORD=password'
