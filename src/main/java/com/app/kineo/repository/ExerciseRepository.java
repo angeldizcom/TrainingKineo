@@ -12,4 +12,6 @@ public interface ExerciseRepository extends JpaRepository<Exercise, Long> {
     Optional<Exercise> findByName(String name);
     List<Exercise> findByMuscleGroup(String muscleGroup);
     List<Exercise> findByCategory(String category);
+
+    List<Exercise> findByMuscleGroupAndEquipment(String muscle, String equipment);
 }
