@@ -54,3 +54,4 @@ google-credentials.json
 
 ### Windows ###
 Thumbs.db
+*.env
