@@ -1,171 +1,112 @@
 package com.app.kineo.service;
 
 import com.app.kineo.dto.AiTrainingPlanDto;
-import com.app.kineo.model.*;
-import com.app.kineo.repository.*;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.app.kineo.exception.NoAssessmentException;
+import com.app.kineo.mapper.TrainingPlanMapper;
+import com.app.kineo.model.TrainingPlan;
+import com.app.kineo.model.User;
+import com.app.kineo.model.UserAssessment;
+import com.app.kineo.repository.TrainingPlanRepository;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Optional;
 
+@Slf4j
 @Service
 public class TrainingPlanService {
 
-    private final ChatClient chatClient;
     private final TrainingPlanRepository planRepository;
-    private final TrainingSessionRepository sessionRepository;
-    private final ExerciseRepository exerciseRepository;
-    private final SessionExerciseRepository sessionExerciseRepository;
-    private final ObjectMapper objectMapper;
+    private final TrainingPlanMapper     planMapper;
+    private final AiResponseParser       responseParser;   // ← nuevo
+    private final ChatClient             defaultChatClient;
 
     public TrainingPlanService(ChatClient.Builder chatClientBuilder,
                                TrainingPlanRepository planRepository,
-                               TrainingSessionRepository sessionRepository,
-                               ExerciseRepository exerciseRepository,
-                               SessionExerciseRepository sessionExerciseRepository,
-                               ObjectMapper objectMapper) {
-        this.chatClient = chatClientBuilder.build();
-        this.planRepository = planRepository;
-        this.sessionRepository = sessionRepository;
-        this.exerciseRepository = exerciseRepository;
-        this.sessionExerciseRepository = sessionExerciseRepository;
-        this.objectMapper = objectMapper;
+                               TrainingPlanMapper planMapper,
+                               AiResponseParser responseParser) {
+        this.defaultChatClient = chatClientBuilder.build();
+        this.planRepository    = planRepository;
+        this.planMapper        = planMapper;
+        this.responseParser    = responseParser;
     }
 
     @Transactional
     public TrainingPlan generatePlanForUser(User user) {
+        return generatePlanForUser(user, 4, defaultChatClient);
+    }
+
+    @Transactional
+    public TrainingPlan generatePlanForUser(User user, int weeks, ChatClient chatClient) {
         UserAssessment assessment = user.getCurrentAssessment();
         if (assessment == null) {
-            throw new IllegalStateException("User does not have an assessment. Cannot generate plan.");
+            throw new NoAssessmentException(user.getId());
         }
 
-        String prompt = constructPrompt(assessment);
-        String jsonResponse = chatClient.prompt()
-                .user(prompt)
+        // Llamada a la IA — respuesta raw
+        String rawResponse = chatClient.prompt()
+                .user(buildPrompt(assessment, weeks))
                 .call()
                 .content();
-        
-        jsonResponse = cleanJson(jsonResponse);
 
-        try {
-            AiTrainingPlanDto aiPlan = objectMapper.readValue(jsonResponse, AiTrainingPlanDto.class);
-            return savePlanFromAi(user, aiPlan);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("Failed to parse AI response: " + e.getMessage(), e);
-        }
+        // Parse con reintento automático
+        AiTrainingPlanDto aiPlan = responseParser.parseWithRetry(
+                rawResponse, AiTrainingPlanDto.class, chatClient
+        );
+
+        deactivatePreviousActivePlan(user.getId());
+
+        TrainingPlan plan = planMapper.toPlan(aiPlan, user, LocalDate.now(), weeks);
+        TrainingPlan saved = planRepository.save(plan);
+
+        log.info("[TrainingPlanService] Plan '{}' ({} semanas) generado para usuario {}.",
+                saved.getName(), weeks, user.getId());
+
+        return saved;
     }
 
-    private String cleanJson(String response) {
-        if (response.startsWith("```json")) {
-            return response.substring(7, response.lastIndexOf("```")).trim();
-        } else if (response.startsWith("```")) {
-            return response.substring(3, response.lastIndexOf("```")).trim();
-        }
-        return response.trim();
+    // ─────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────
+
+    private void deactivatePreviousActivePlan(Long userId) {
+        planRepository.findByUserIdAndStatus(userId, "ACTIVE").ifPresent(old -> {
+            old.setStatus("COMPLETED");
+            planRepository.save(old);
+            log.info("[TrainingPlanService] Plan anterior '{}' desactivado.", old.getName());
+        });
     }
 
-    private TrainingPlan savePlanFromAi(User user, AiTrainingPlanDto aiPlan) {
-        TrainingPlan plan = new TrainingPlan();
-        plan.setUser(user);
-        plan.setName(aiPlan.getName());
-        plan.setGoal(aiPlan.getGoal());
-        plan.setStartDate(LocalDate.now());
-        plan.setEndDate(LocalDate.now().plusWeeks(4));
-        plan.setStatus("ACTIVE");
-
-        plan = planRepository.save(plan);
-
-        int dayOffset = 0;
-        if (aiPlan.getSessions() != null) {
-            for (AiTrainingPlanDto.AiSessionDto sessionDto : aiPlan.getSessions()) {
-                TrainingSession session = new TrainingSession();
-                session.setTrainingPlan(plan);
-                session.setName(sessionDto.getDayName());
-                session.setNotes(sessionDto.getFocus());
-                session.setScheduledDate(plan.getStartDate().plusDays(dayOffset));
-                dayOffset++;
-                
-                session = sessionRepository.save(session);
-
-                int order = 1;
-                if (sessionDto.getExercises() != null) {
-                    for (AiTrainingPlanDto.AiExerciseDto exDto : sessionDto.getExercises()) {
-                        Exercise exercise = findOrCreateExercise(exDto);
-
-                        SessionExercise sessionExercise = new SessionExercise();
-                        sessionExercise.setTrainingSession(session);
-                        sessionExercise.setExercise(exercise);
-                        sessionExercise.setOrderIndex(order++);
-                        sessionExercise.setNotes(exDto.getNotes());
-
-                        sessionExerciseRepository.save(sessionExercise);
-                    }
-                }
-            }
-        }
-        return plan;
-    }
-
-    private Exercise findOrCreateExercise(AiTrainingPlanDto.AiExerciseDto exDto) {
-        Optional<Exercise> existing = exerciseRepository.findByName(exDto.getName());
-        if (existing.isPresent()) {
-            return existing.get();
-        }
-        Exercise newEx = new Exercise();
-        newEx.setName(exDto.getName());
-        newEx.setMuscleGroup(exDto.getMuscleTarget());
-        newEx.setDescription("AI Generated Exercise");
-        newEx.setCategory("GENERAL"); 
-        return exerciseRepository.save(newEx);
-    }
-
-    private String constructPrompt(UserAssessment assessment) {
+    private String buildPrompt(UserAssessment a, int weeks) {
         return String.format("""
-                Act as an expert personal trainer. Create a 1-week training plan for a client with the following profile:
-                - Goal: %s
-                - Level: %s
-                - Days available: %d
-                - Duration per session: %d mins
-                - Equipment: %s
-                - Injuries/Limitations: %s
-                - Gender: %s, Age: %d, Weight: %.1fkg, Height: %.1fcm
+                Actúa como un entrenador personal experto. Crea un plan de entrenamiento de %d semana(s)
+                para un cliente con el siguiente perfil:
+                - Objetivo: %s | Nivel: %s | Días/semana: %d | Duración/sesión: %d min
+                - Equipamiento: %s | Lesiones: %s
+                - Género: %s | Edad: %d | Peso: %.1f kg | Altura: %.1f cm
 
-                Return the plan ONLY as valid JSON matching this structure:
+                Genera exactamente %d sesiones. Nombres de ejercicios en español.
+                Devuelve ÚNICAMENTE JSON válido sin markdown con esta estructura exacta:
                 {
-                  "name": "Plan Name",
-                  "goal": "Goal description",
-                  "description": "Brief overview",
-                  "sessions": [
-                    {
-                      "dayName": "Day 1: Legs",
-                      "focus": "Strength",
-                      "exercises": [
-                        {
-                          "name": "Squat",
-                          "muscleTarget": "Legs",
-                          "sets": 3,
-                          "reps": 10,
-                          "notes": "Rest 90s"
-                        }
-                      ]
-                    }
-                  ]
+                  "name": "...", "goal": "...", "description": "...",
+                  "sessions": [{
+                    "dayName": "Día 1: Piernas", "focus": "Fuerza",
+                    "exercises": [{
+                      "name": "Sentadilla Trasera con Barra",
+                      "muscleTarget": "LEGS", "sets": 4, "reps": 8, "notes": "..."
+                    }]
+                  }]
                 }
-                DO NOT add any markdown formatting or text outside the JSON.
                 """,
-                assessment.getPrimaryGoal(),
-                assessment.getFitnessLevel(),
-                assessment.getTrainingFrequency(),
-                assessment.getPreferredDurationMinutes(),
-                assessment.getEquipmentAccess(),
-                assessment.getInjuries(),
-                assessment.getGender(), assessment.getAge(), assessment.getWeight(), assessment.getHeight()
+                weeks,
+                a.getPrimaryGoal(), a.getFitnessLevel(),
+                a.getTrainingFrequency(), a.getPreferredDurationMinutes(),
+                a.getEquipmentAccess(),
+                a.getInjuries() != null ? a.getInjuries() : "Ninguna",
+                a.getGender(), a.getAge(), a.getWeight(), a.getHeight(),
+                a.getTrainingFrequency() * weeks
         );
     }
 }

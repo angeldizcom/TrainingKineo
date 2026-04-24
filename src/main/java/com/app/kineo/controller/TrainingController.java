@@ -29,7 +29,7 @@ public class TrainingController {
             @RequestParam(defaultValue = "GEMINI") String provider) {
 
         // Dispara la IA (Gemini/Claude) + Guarda en DB
-        String message = trainingManager.processBuild(userId, planId, goal, provider);
+        String message = trainingManager.processSessionBuild(userId, planId, goal, provider);
         return ResponseEntity.ok(message);
     }
     @GetMapping("/history")

@@ -6,27 +6,43 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # Base de datos
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/kineo_training
       - SPRING_DATASOURCE_USERNAME=postgres
       - SPRING_DATASOURCE_PASSWORD=password
-      - SPRING_AI_VERTEX_AI_GEMINI_PROJECT_ID=${VERTEX_PROJECT_ID}
-      - SPRING_AI_VERTEX_AI_GEMINI_LOCATION=${VERTEX_LOCATION}
-      # Si usas credenciales locales montadas:
+      # Claude — obligatorio
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # JWT — obligatorio
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRATION_MS=86400000
+      # Gemini — comentado en Opción A
+      # Para Opción B: descomentar + montar credenciales de Google
+      # - VERTEX_PROJECT_ID=${VERTEX_PROJECT_ID}
+      # - VERTEX_LOCATION=${VERTEX_LOCATION}
       # - GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy   # espera a que Postgres esté listo
+    # Para Opción B montar credenciales de Google:
+    # volumes:
+    #   - ./google-credentials.json:/app/credentials.json
 
   postgres:
     image: 'postgres:16'
     container_name: kineo-postgres
     environment:
-      - 'POSTGRES_DB=kineo_training'
-      - 'POSTGRES_PASSWORD=password'
-      - 'POSTGRES_USER=postgres'
+      - POSTGRES_DB=kineo_training
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_USER=postgres
     ports:
       - '5432:5432'
     volumes:
       - kineo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d kineo_training"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   kineo-postgres-data:

@@ -1,36 +1,46 @@
+// ─────────────────────────────────────────────────────────────────────
+// AuthController.java — login con verificación BCrypt real
+// ────────────────────────────────────────────────────────────
 package com.app.kineo.service;
 
 import com.app.kineo.dto.UserRegistrationRequest;
+import com.app.kineo.exception.UserAlreadyExistsException;
 import com.app.kineo.model.User;
 import com.app.kineo.model.UserAssessment;
 import com.app.kineo.repository.UserAssessmentRepository;
 import com.app.kineo.repository.UserRepository;
-import com.app.kineo.service.TrainingPlanService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
+@RequiredArgsConstructor
 public class UserService {
 
-    private final UserRepository userRepository;
+    private final UserRepository           userRepository;
     private final UserAssessmentRepository assessmentRepository;
-    private final TrainingPlanService trainingPlanService;
-
-    public UserService(UserRepository userRepository, UserAssessmentRepository assessmentRepository, TrainingPlanService trainingPlanService) {
-        this.userRepository = userRepository;
-        this.assessmentRepository = assessmentRepository;
-        this.trainingPlanService = trainingPlanService;
-    }
+    private final TrainingPlanService      trainingPlanService;
+    private final PasswordEncoder          passwordEncoder;
 
     @Transactional
     public User registerUserAndGeneratePlan(UserRegistrationRequest request) {
-        // 1. Create User
+        // Verificar unicidad antes de crear
+        userRepository.findByEmail(request.getEmail()).ifPresent(u -> {
+            throw new UserAlreadyExistsException("email", request.getEmail());
+        });
+        userRepository.findByUsername(request.getUsername()).ifPresent(u -> {
+            throw new UserAlreadyExistsException("username", request.getUsername());
+        });
+
+        // Crear usuario con contraseña hasheada
         User user = new User();
         user.setUsername(request.getUsername());
         user.setEmail(request.getEmail());
+        user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
         user = userRepository.save(user);
 
-        // 2. Create Assessment
+        // Crear assessment
         UserAssessment assessment = new UserAssessment();
         assessment.setUser(user);
         assessment.setPrimaryGoal(request.getPrimaryGoal());
@@ -43,13 +53,11 @@ public class UserService {
         assessment.setGender(request.getGender());
         assessment.setInjuries(request.getInjuries());
         assessment.setEquipmentAccess(request.getEquipmentAccess());
-        
         assessmentRepository.save(assessment);
-        
-        // Update user reference
+
         user.setCurrentAssessment(assessment);
 
-        // 3. Trigger AI Plan Generation
+        // Generar plan inicial con IA
         trainingPlanService.generatePlanForUser(user);
 
         return user;

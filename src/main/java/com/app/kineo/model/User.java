@@ -17,6 +17,7 @@ import java.util.List;
 @AllArgsConstructor
 @EntityListeners(AuditingEntityListener.class)
 public class User {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -26,6 +27,15 @@ public class User {
 
     @Column(nullable = false, unique = true)
     private String email;
+
+    /**
+     * Hash BCrypt de la contraseña.
+     * Nunca se serializa al JSON de respuesta gracias a @JsonIgnore
+     * en el DTO — la entidad no lleva @JsonIgnore directamente
+     * para no mezclar capas, el mapper se encarga de omitirlo.
+     */
+    @Column(name = "password_hash")
+    private String passwordHash;
 
     @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private UserAssessment currentAssessment;
